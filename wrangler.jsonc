@@ -2,46 +2,24 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "domovina-cutter",
   "main": "src/index.ts",
+  "account_id": "7dc7167b7e2e00923bfa7cd697df14e4",
   "compatibility_date": "2026-07-01",
   "observability": {
     "enabled": true
   },
-  // R2 bucket that also backs cdn.domovina.ai. Clips are written under the
-  // clips/ prefix. Worker uses this binding ONLY (no S3 keys) for head/302.
+  // R2 bucket that also backs cdn.domovina.ai. Clips live under the clips/
+  // prefix. Worker uses this binding ONLY (no S3 keys) for head/get/302.
   "r2_buckets": [
     {
       "binding": "CLIPS",
       "bucket_name": "cdn-domovina-ai"
     }
   ],
-  // Container that runs ffmpeg and uploads the clip straight to R2 via S3 API.
-  "containers": [
-    {
-      "class_name": "CutterContainer",
-      "image": "./container/Dockerfile",
-      "instance_type": "standard-1",
-      "max_instances": 5
-    }
-  ],
-  // Durable Objects: the container (CutterContainer) + the per-key single-flight lock.
-  "durable_objects": {
-    "bindings": [
-      {
-        "name": "CUTTER",
-        "class_name": "CutterContainer"
-      },
-      {
-        "name": "SINGLE_FLIGHT",
-        "class_name": "SingleFlight"
-      }
-    ]
-  },
-  "migrations": [
-    {
-      "tag": "v1",
-      "new_sqlite_classes": ["CutterContainer", "SingleFlight"]
-    }
-  ]
-  // Custom domain (cutter.domovina.ai) is added at deploy time via the
-  // `routes` block / dashboard once the zone is confirmed. See README.
+  "vars": {
+    // Base URL of the Coolify-hosted ffmpeg cutter microservice.
+    // Update to the real subdomain once the Coolify app is deployed.
+    "CUTTER_URL": "https://cutter-svc.domovina.ai"
+  }
+  // Secret (wrangler secret put): CUTTER_API_KEY — bearer token for the service.
+  // Custom domain cutter.domovina.ai is added at deploy time (see README).
 }

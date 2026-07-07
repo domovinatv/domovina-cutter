@@ -7,19 +7,24 @@ import {
   slugify,
   videoUrl,
 } from "./article";
-import { CutterContainer } from "./cutter-container";
-import { SingleFlight, type CutRequest } from "./single-flight";
-
-export { CutterContainer, SingleFlight };
 
 export interface Env {
+  // R2 bucket that also backs cdn.domovina.ai. Used ONLY for existence checks
+  // (head) and the ?dl=1 stream — the cache-gate. Works on the Workers free plan.
   CLIPS: R2Bucket;
-  CUTTER: DurableObjectNamespace<CutterContainer>;
-  SINGLE_FLIGHT: DurableObjectNamespace<SingleFlight>;
-  // Injected via `wrangler secret put` — used by the container for S3 upload.
-  R2_ACCOUNT_ID?: string;
-  R2_ACCESS_KEY_ID?: string;
-  R2_SECRET_ACCESS_KEY?: string;
+  // Base URL of the Coolify-hosted ffmpeg cutter service (e.g.
+  // https://cutter-svc.domovina.ai). Configured as a var in wrangler.jsonc.
+  CUTTER_URL: string;
+  // Bearer token the Worker sends to the cutter service. `wrangler secret put`.
+  CUTTER_API_KEY?: string;
+}
+
+interface CutRequest {
+  videoUrl: string;
+  startSec: number;
+  durationSec: number;
+  key: string;
+  precise: boolean;
 }
 
 const CLIP_CACHE = "public, max-age=31536000, immutable";
@@ -75,7 +80,8 @@ app.get("/clip/:videoId/:file", async (c) => {
   let head = await env.CLIPS.head(resolved.key);
 
   if (!head) {
-    // Cold path — coalesce concurrent cuts of the same key via the DO lock.
+    // Cold path — ask the Coolify cutter service to produce + upload the clip.
+    // The service coalesces concurrent identical cuts and is idempotent.
     const cutReq: CutRequest = {
       videoUrl: videoUrl(videoId),
       startSec: resolved.startSec,
@@ -83,12 +89,22 @@ app.get("/clip/:videoId/:file", async (c) => {
       key: resolved.key,
       precise,
     };
-    const stub = env.SINGLE_FLIGHT.getByName(resolved.key);
-    const cutRes = await stub.fetch("https://single-flight/cut", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(cutReq),
-    });
+    let cutRes: Response;
+    try {
+      cutRes = await fetch(`${env.CUTTER_URL}/cut`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(env.CUTTER_API_KEY
+            ? { authorization: `Bearer ${env.CUTTER_API_KEY}` }
+            : {}),
+        },
+        body: JSON.stringify(cutReq),
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return c.text(`cutter unreachable: ${msg}`, 502);
+    }
     if (!cutRes.ok) {
       const detail = await cutRes.text().catch(() => "");
       return c.text(`cut failed: ${detail}`, 502);

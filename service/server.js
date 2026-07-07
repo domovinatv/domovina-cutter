@@ -3,9 +3,13 @@ import { spawn } from "node:child_process";
 import { createReadStream, statSync } from "node:fs";
 import { unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import {
+  S3Client,
+  PutObjectCommand,
+  HeadObjectCommand,
+} from "@aws-sdk/client-s3";
 
-const PORT = 8080;
+const PORT = parseInt(process.env.PORT || "8080", 10);
 const CLIP_CACHE = "public, max-age=31536000, immutable";
 
 const {
@@ -13,6 +17,7 @@ const {
   R2_ACCESS_KEY_ID,
   R2_SECRET_ACCESS_KEY,
   R2_BUCKET = "cdn-domovina-ai",
+  CUTTER_API_KEY, // Bearer token required on /cut (except /health)
 } = process.env;
 
 const s3 = new S3Client({
@@ -25,7 +30,7 @@ const s3 = new S3Client({
 });
 
 function log(...args) {
-  console.log("[cutter]", ...args);
+  console.log("[cutter]", new Date().toISOString(), ...args);
 }
 
 /** Build the ffmpeg argv. `-ss` before `-i` = fast keyframe seek over HTTP range. */
@@ -69,13 +74,28 @@ function runFfmpeg(args, outPath) {
   });
 }
 
-async function handleCut(body) {
+async function objectExists(key) {
+  try {
+    await s3.send(new HeadObjectCommand({ Bucket: R2_BUCKET, Key: key }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function doCut(body) {
   const { videoUrl, startSec, durationSec, key, precise } = body;
   if (!videoUrl || !key || durationSec == null || startSec == null) {
     throw new Error("missing fields");
   }
   if (!R2_ACCOUNT_ID || !R2_ACCESS_KEY_ID || !R2_SECRET_ACCESS_KEY) {
     throw new Error("R2 credentials not configured");
+  }
+
+  // Idempotency: another request may have produced this clip already.
+  if (await objectExists(key)) {
+    log("exists", key);
+    return { ok: true, cached: true };
   }
 
   const outPath = `/tmp/${randomUUID()}.mp4`;
@@ -104,6 +124,16 @@ async function handleCut(body) {
   }
 }
 
+// Single-flight: coalesce concurrent identical cut requests in-process.
+const inflight = new Map();
+function handleCut(body) {
+  const key = body.key;
+  if (inflight.has(key)) return inflight.get(key);
+  const p = doCut(body).finally(() => inflight.delete(key));
+  inflight.set(key, p);
+  return p;
+}
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -113,16 +143,27 @@ function readBody(req) {
   });
 }
 
+function authorized(req) {
+  if (!CUTTER_API_KEY) return true; // auth disabled if no key set
+  const header = req.headers["authorization"] || "";
+  return header === `Bearer ${CUTTER_API_KEY}`;
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://localhost");
 
-  if (req.method === "GET" && (url.pathname === "/health" || url.pathname === "/")) {
+  if (req.method === "GET" && url.pathname === "/health") {
     res.writeHead(200, { "content-type": "text/plain" });
     res.end("ok");
     return;
   }
 
   if (req.method === "POST" && url.pathname === "/cut") {
+    if (!authorized(req)) {
+      res.writeHead(401, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "unauthorized" }));
+      return;
+    }
     try {
       const raw = await readBody(req);
       const body = JSON.parse(raw);
