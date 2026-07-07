@@ -7,6 +7,14 @@
   "observability": {
     "enabled": true
   },
+  // Public custom domain. wrangler provisions the DNS record + cert in the
+  // domovina.ai zone. The cutter service lives on a different subdomain.
+  "routes": [
+    {
+      "pattern": "cutter.domovina.ai",
+      "custom_domain": true
+    }
+  ],
   // R2 bucket that also backs cdn.domovina.ai. Clips live under the clips/
   // prefix. Worker uses this binding ONLY (no S3 keys) for head/get/302.
   "r2_buckets": [
