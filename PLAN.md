@@ -115,6 +115,38 @@ ffmpeg -nostdin -hide_banner -loglevel error \
 
 ---
 
+## 3.5. Cost & compute — zašto je jeftino
+
+**ffmpeg NE trči u Workeru.** Worker je V8 isolate: nema native binarija, 128 MB RAM, CPU cap.
+On samo orkestrira (fetch `article.json`, R2 `head`, 302) → par ms CPU → praktički $0.
+ffmpeg trči u **Containeru**, i to kao **remux, ne re-encode**.
+
+`-c copy` = demux odabranog byte-rangea + rewrite MP4 containera. **Nema decode/encode**, CPU
+minimalan; čita samo dio fajla (chapter 2/3 = srednja trećina, preko HTTP range). Trošak je
+**I/O (bajtovi u prometu) + par sekundi container-vremena**, ne CPU.
+
+| Stavka | Trošak (red veličine) |
+|---|---|
+| Worker (orkestracija) | ~$0 (par ms CPU, unutar 10M besplatnih zahtjeva) |
+| Container CPU+RAM po rezu | ~$0.0005 (1 vCPU / 1 GiB, ~10–20s remux) |
+| Container egress fetch+upload (~100 MB, većim dijelom intra-CF) | ~$0.001–0.0025 ako se broji |
+| **Ukupno po rezu (HLADNI put)** | **sub-cent, ~$0.001–0.005** |
+| **TOPLI put (2. i svaki idući poziv)** | **~$0 — čisti CDN 302, container se ne budi** |
+| R2 storage clipa (~50 MB) | ~$0.0008/mj, **egress $0** (R2 nema egress fee) |
+| Fiksno | Workers Paid **$5/mj** baza (Containers traže Paid plan) |
+
+Isti red veličine kao ~$0.003/epizoda transkripcija. **Zaključak: jeftino, dominira I/O ne CPU.**
+
+Caveat 1 — **cold start**: prvi rez nekog clipa plaća container spin-up (par sek latencije) +
+vrijeme reza. Zato single-flight DO — dva istovremena prva poziva ne bude dva containera.
+Caveat 2 — **pricing brojke su procjena** (CF Containers cjenik se mijenja) → implementacijska
+sesija neka potvrdi aktualne stope preko `cloudflare` skilla; zaključak "jeftino" stoji čvrsto.
+Caveat 3 — **Cloudflare Media Transformations** može klipati MP4 bez containera, ALI ima cap na
+trajanje clipa (kratke minute) → 40-min chapter gotovo sigurno prekoračuje. Sesija neka to u 30s
+provjeri prije gradnje Containera; ako je limit i dalje nizak, Container+ffmpeg ostaje.
+
+---
+
 ## 4. HTTP API (javni ugovor za Flutter)
 
 ```
@@ -177,3 +209,22 @@ curl -sI "https://cutter.domovina.ai/clip/fKlRKppc9Cs/1.mp4"   # očekuj 302 →
 - **Ne preprocesira** cijeli katalog. Samo na zahtjev.
 - Ne stavljati R2 kredencijale u Worker kod niti u git — samo `wrangler secret`.
 - `git` remote nije postavljen — user odlučuje hoće li push.
+
+---
+
+## 9. Scope: ovaj repo = shareable file, NE in-app clamp
+
+Postoje **dvije različite značajke** oko "chaptera" — ne miješati ih:
+
+1. **In-app "chapter mode"** — player u Flutteru clampan na `[start, end]` (ne možeš seekati
+   van chaptera). Rješava se **čisto na frontendu**, nula backenda, nula rezanja, radi
+   retroaktivno za sve epizode. **Ovaj repo to NE radi** — to je posao domovina.ai Flutter repoa.
+
+2. **Downloadable / shareable chapter file** — prava MP4 datoteka koja se sama zavrti inline u
+   WhatsApp/Telegram/iMessage. **TO je ovaj repo (domovina-cutter).**
+
+Bitna korekcija na eventualnu "AV1 blokira inline share" zabrinutost: **CDN već servira
+H.264 + AAC** (`data/{videoId}/video_h264.mp4`, migracija gotova 2696/2696, legacy `video.mp4`
+obrisan). Dakle inline autoplay u WhatsAppu **NIJE blokiran**, i rez ide **stream-copy `-c copy`
+bez re-encodea** (izvor je već H.264) → nema dual-encode ovisnosti. Ranije analize koje spominju
+"CDN je AV1 / treba dual-encode prvo" rade na zastarjelom stanju.
