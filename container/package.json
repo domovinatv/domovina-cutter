@@ -1,0 +1,11 @@
+{
+  "name": "domovina-cutter-container",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "ffmpeg cut + R2 (S3) upload HTTP server for domovina-cutter",
+  "main": "server.js",
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1080.0"
+  }
+}
