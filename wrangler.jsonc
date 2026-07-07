@@ -19,7 +19,19 @@
     // Base URL of the Coolify-hosted ffmpeg cutter microservice.
     // Update to the real subdomain once the Coolify app is deployed.
     "CUTTER_URL": "https://cutter-svc.domovina.ai"
-  }
+  },
+  // A prior deploy registered CutterContainer + SingleFlight Durable Objects
+  // before the (now removed) CF Container path was abandoned. v2 deletes them.
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["CutterContainer", "SingleFlight"]
+    },
+    {
+      "tag": "v2",
+      "deleted_classes": ["CutterContainer", "SingleFlight"]
+    }
+  ]
   // Secret (wrangler secret put): CUTTER_API_KEY — bearer token for the service.
   // Custom domain cutter.domovina.ai is added at deploy time (see README).
 }
