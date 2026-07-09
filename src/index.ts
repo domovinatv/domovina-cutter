@@ -89,25 +89,35 @@ app.get("/clip/:videoId/:file", async (c) => {
       key: resolved.key,
       precise,
     };
-    let cutRes: Response;
-    try {
-      cutRes = await fetch(`${env.CUTTER_URL}/cut`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          ...(env.CUTTER_API_KEY
-            ? { authorization: `Bearer ${env.CUTTER_API_KEY}` }
-            : {}),
-        },
-        body: JSON.stringify(cutReq),
-      });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return c.text(`cutter unreachable: ${msg}`, 502);
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      ...(env.CUTTER_API_KEY
+        ? { authorization: `Bearer ${env.CUTTER_API_KEY}` }
+        : {}),
+    };
+    const body = JSON.stringify(cutReq);
+    // The service is idempotent + coalescing, so a retry is safe. This rides
+    // out transient unavailability (container cold start / redeploy window).
+    let cutRes: Response | null = null;
+    let lastErr = "";
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, 1500));
+      try {
+        cutRes = await fetch(`${env.CUTTER_URL}/cut`, {
+          method: "POST",
+          headers,
+          body,
+        });
+      } catch (err) {
+        lastErr = `cutter unreachable: ${err instanceof Error ? err.message : String(err)}`;
+        cutRes = null;
+        continue;
+      }
+      if (cutRes.ok) break;
+      lastErr = `cut failed: ${await cutRes.text().catch(() => "")}`;
     }
-    if (!cutRes.ok) {
-      const detail = await cutRes.text().catch(() => "");
-      return c.text(`cut failed: ${detail}`, 502);
+    if (!cutRes || !cutRes.ok) {
+      return c.text(lastErr || "cut failed", 502);
     }
     head = await env.CLIPS.head(resolved.key);
     if (!head) return c.text("clip missing after cut", 502);

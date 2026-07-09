@@ -86,12 +86,39 @@ Two pieces: the **Coolify service** (does the cutting) and the **Cloudflare Work
 1. New Coolify app from this repo, build context `service/` (Dockerfile). Port `8080`.
 2. Assign a domain — e.g. `cutter-svc.domovina.ai` (must differ from the Worker's
    `cutter.domovina.ai`).
-3. Set env (see `service/.env.example`):
+3. Point `cutter-svc.domovina.ai` at the container (Cloudflare Tunnel public
+   hostname → the app's port `8080`).
+4. Set env — either in the Coolify UI (see `service/.env.example`) or via the
+   scripted sync below (recommended):
    - `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` — scoped R2 Object
      Read & Write token for bucket `cdn-domovina-ai` (same family as the main repo `.env`).
    - `R2_BUCKET=cdn-domovina-ai`
-   - `CUTTER_API_KEY` — shared bearer token (`openssl rand -hex 32`).
-4. Deploy. Verify: `curl https://cutter-svc.domovina.ai/health` → `ok`.
+   - `CUTTER_API_KEY` — shared bearer token (`openssl rand -hex 32`), must match the
+     Worker secret.
+5. Deploy. Verify: `curl https://cutter-svc.domovina.ai/health` → `ok`.
+
+### Operations — Coolify env & redeploy (scripted)
+
+The `scripts/coolify-*.sh` drive the Coolify v4 API (same pattern as `domovina-api`)
+so env changes + redeploys are done from the CLI — no dashboard clicking. Copy
+`.local-secrets.env.example` → `.local-secrets.env` (gitignored) and fill the Coolify
+API token + app UUID + `CUTTER_API_KEY`.
+
+```bash
+# Push R2 creds (read from ../fetch.domovina.tv/.env) + CUTTER_API_KEY + redeploy:
+./scripts/coolify-sync-secrets.sh
+
+# Set/update a single env var (+ optional redeploy):
+./scripts/coolify-env-set.sh SOME_KEY=value --deploy
+
+# Just trigger a redeploy (picks up latest git + env):
+./scripts/coolify-deploy.sh
+```
+
+Coolify does **not** restart the app on an env change on its own — the scripts trigger
+the redeploy for you (`GET /api/v1/deploy?uuid=…`). Secrets are read from local
+gitignored files and pushed straight to Coolify; they never enter this repo or logs
+(values are masked in script output).
 
 ### 2. Cloudflare Worker (`wrangler`)
 

@@ -1,6 +1,13 @@
 node_modules/
 .env
+.env.*
+!.env.example
 .dev.vars
 .wrangler/
 dist/
 *.log
+
+# local secrets for Coolify API automation (gitignored; keep the .example)
+.local-secrets.env
+!.local-secrets.env.example
+.coolify-*.env
