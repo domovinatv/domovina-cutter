@@ -100,6 +100,22 @@ export function resolveChapter(
   };
 }
 
+/**
+ * Deterministic key for an arbitrary [startSec, endSec] range clip (used by the
+ * per-chapter route, where boundaries come from outline chapters rather than
+ * article iterations). Distinct `r` prefix so it never collides with the
+ * per-iteration `ch{N}__…` keys.
+ */
+export function rangeKey(
+  videoId: string,
+  startSec: number,
+  endSec: number,
+  precise: boolean,
+): string {
+  const suffix = precise ? "_precise" : "";
+  return `clips/${videoId}/r${startSec}-${endSec}${suffix}.mp4`;
+}
+
 /** ASCII, filesystem-safe slug of a chapter theme for download filenames. */
 export function slugify(input: string): string {
   const map: Record<string, string> = {

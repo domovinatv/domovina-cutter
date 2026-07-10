@@ -1,8 +1,10 @@
 import { Hono } from "hono";
+import type { Context } from "hono";
 import {
   CDN_BASE,
   fetchArticle,
   isValidVideoId,
+  rangeKey,
   resolveChapter,
   slugify,
   videoUrl,
@@ -35,7 +37,9 @@ app.get("/healthz", (c) => c.text("ok"));
 
 app.get("/", (c) =>
   c.text(
-    "domovina-cutter — GET /clip/{videoId}/{chapter}.mp4[?dl=1][&precise=1]\n",
+    "domovina-cutter\n" +
+      "  GET /clip/{videoId}/{chapter}.mp4[?dl=1][&precise=1]     (article iteration)\n" +
+      "  GET /clip/{videoId}/r/{startSec}-{endSec}.mp4[?dl=1][&precise=1][&name=slug]  (range)\n",
   ),
 );
 
@@ -56,37 +60,38 @@ app.get("/chapters/:videoId", async (c) => {
   return c.json(chapters);
 });
 
-app.get("/clip/:videoId/:file", async (c) => {
+/**
+ * Shared cache-gate: given a resolved clip window, HIT → 302 to CDN, MISS →
+ * cold-cut via the Coolify service then 302 (or stream with a filename on ?dl=1).
+ *
+ * Existence check goes through the R2 binding, NEVER a public CDN GET —
+ * cdn.domovina.ai caches 404s for 4h, which would poison the warm redirect.
+ */
+async function serveClip(
+  c: Context<{ Bindings: Env }>,
+  opts: {
+    key: string;
+    startSec: number;
+    endSec: number;
+    precise: boolean;
+    dl: boolean;
+    filename: string;
+  },
+): Promise<Response> {
   const env = c.env;
-  const videoId = c.req.param("videoId");
-  if (!isValidVideoId(videoId)) return c.text("bad videoId", 404);
+  const { key, startSec, endSec, precise, dl, filename } = opts;
 
-  const file = c.req.param("file");
-  const m = /^(\d+)\.mp4$/.exec(file);
-  if (!m) return c.text("expected {chapter}.mp4", 404);
-  const chapter = parseInt(m[1], 10);
-
-  const precise = c.req.query("precise") === "1";
-  const dl = c.req.query("dl") === "1";
-
-  const article = await fetchArticle(videoId);
-  if (!article) return c.text("no article.json", 404);
-
-  const resolved = resolveChapter(article, videoId, chapter, precise);
-  if (!resolved) return c.text("chapter out of range", 404);
-
-  // Cache-gate: existence check MUST go through the R2 binding, never a public
-  // CDN GET (cdn.domovina.ai caches 404s for 4h).
-  let head = await env.CLIPS.head(resolved.key);
+  let head = await env.CLIPS.head(key);
 
   if (!head) {
     // Cold path — ask the Coolify cutter service to produce + upload the clip.
     // The service coalesces concurrent identical cuts and is idempotent.
+    const videoId = key.split("/")[1];
     const cutReq: CutRequest = {
       videoUrl: videoUrl(videoId),
-      startSec: resolved.startSec,
-      durationSec: resolved.endSec - resolved.startSec,
-      key: resolved.key,
+      startSec,
+      durationSec: endSec - startSec,
+      key,
       precise,
     };
     const headers: Record<string, string> = {
@@ -119,33 +124,89 @@ app.get("/clip/:videoId/:file", async (c) => {
     if (!cutRes || !cutRes.ok) {
       return c.text(lastErr || "cut failed", 502);
     }
-    head = await env.CLIPS.head(resolved.key);
+    head = await env.CLIPS.head(key);
     if (!head) return c.text("clip missing after cut", 502);
   }
 
   if (dl) {
     // Stream the object through the Worker so we can set an attachment filename.
     // R2 body is a ReadableStream — not buffered into Worker memory.
-    const obj = await env.CLIPS.get(resolved.key);
+    const obj = await env.CLIPS.get(key);
     if (!obj) return c.text("clip vanished", 502);
-    const headers = new Headers();
-    headers.set("content-type", "video/mp4");
-    headers.set("cache-control", CLIP_CACHE);
-    headers.set("content-length", String(obj.size));
-    headers.set(
+    const outHeaders = new Headers();
+    outHeaders.set("content-type", "video/mp4");
+    outHeaders.set("cache-control", CLIP_CACHE);
+    outHeaders.set("content-length", String(obj.size));
+    outHeaders.set(
       "content-disposition",
-      `attachment; filename="${slugify(resolved.theme)}.mp4"`,
+      `attachment; filename="${filename}.mp4"`,
     );
-    return new Response(obj.body, { headers });
+    return new Response(obj.body, { headers: outHeaders });
   }
 
   // Warm/inline path — clean CDN redirect.
   return new Response(null, {
     status: 302,
     headers: {
-      location: `${CDN_BASE}/${resolved.key}`,
+      location: `${CDN_BASE}/${key}`,
       "cache-control": CLIP_CACHE,
     },
+  });
+}
+
+// Range clip: arbitrary [startSec, endSec] window (per-chapter share/download).
+// MUST be registered before the generic /:file route so "r" isn't swallowed.
+app.get("/clip/:videoId/r/:file", async (c) => {
+  const videoId = c.req.param("videoId");
+  if (!isValidVideoId(videoId)) return c.text("bad videoId", 404);
+
+  const file = c.req.param("file");
+  const m = /^(\d+)-(\d+)\.mp4$/.exec(file);
+  if (!m) return c.text("expected {startSec}-{endSec}.mp4", 404);
+  const startSec = parseInt(m[1], 10);
+  const endSec = parseInt(m[2], 10);
+  if (endSec <= startSec) return c.text("empty range", 404);
+
+  const precise = c.req.query("precise") === "1";
+  const dl = c.req.query("dl") === "1";
+  const name = c.req.query("name") ?? "";
+
+  return serveClip(c, {
+    key: rangeKey(videoId, startSec, endSec, precise),
+    startSec,
+    endSec,
+    precise,
+    dl,
+    filename: slugify(name) === "clip" ? `isjecak-${startSec}` : slugify(name),
+  });
+});
+
+// Chapter clip: 1-based article iteration_number.
+app.get("/clip/:videoId/:file", async (c) => {
+  const videoId = c.req.param("videoId");
+  if (!isValidVideoId(videoId)) return c.text("bad videoId", 404);
+
+  const file = c.req.param("file");
+  const m = /^(\d+)\.mp4$/.exec(file);
+  if (!m) return c.text("expected {chapter}.mp4", 404);
+  const chapter = parseInt(m[1], 10);
+
+  const precise = c.req.query("precise") === "1";
+  const dl = c.req.query("dl") === "1";
+
+  const article = await fetchArticle(videoId);
+  if (!article) return c.text("no article.json", 404);
+
+  const resolved = resolveChapter(article, videoId, chapter, precise);
+  if (!resolved) return c.text("chapter out of range", 404);
+
+  return serveClip(c, {
+    key: resolved.key,
+    startSec: resolved.startSec,
+    endSec: resolved.endSec,
+    precise,
+    dl,
+    filename: slugify(resolved.theme),
   });
 });
 
