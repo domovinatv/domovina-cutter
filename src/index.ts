@@ -9,6 +9,7 @@ import {
   slugify,
   videoUrl,
 } from "./article";
+import { isDocumentNavigation, renderDownloadPage } from "./page";
 
 export interface Env {
   // R2 bucket that also backs cdn.domovina.ai. Used ONLY for existence checks
@@ -76,10 +77,29 @@ async function serveClip(
     precise: boolean;
     dl: boolean;
     filename: string;
+    title: string;
   },
 ): Promise<Response> {
   const env = c.env;
-  const { key, startSec, endSec, precise, dl, filename } = opts;
+  const { key, startSec, endSec, precise, dl, filename, title } = opts;
+
+  // A download link opened in a browser tab gets a progress page (instead of a
+  // blank tab during the cold cut) that fetches the MP4 itself via ?raw=1.
+  if (dl && c.req.query("raw") !== "1" && isDocumentNavigation(c.req.raw)) {
+    const url = new URL(c.req.url);
+    const raw = new URL(url);
+    raw.searchParams.set("raw", "1");
+    const share = new URL(url.origin + url.pathname);
+    if (precise) share.searchParams.set("precise", "1");
+    return renderDownloadPage({
+      title,
+      filename,
+      startSec,
+      endSec,
+      rawUrl: raw.pathname + raw.search,
+      shareUrl: share.toString(),
+    });
+  }
 
   let head = await env.CLIPS.head(key);
 
@@ -178,6 +198,7 @@ app.get("/clip/:videoId/r/:file", async (c) => {
     precise,
     dl,
     filename: slugify(name) === "clip" ? `isjecak-${startSec}` : slugify(name),
+    title: name.trim() || "Isječak",
   });
 });
 
@@ -207,6 +228,7 @@ app.get("/clip/:videoId/:file", async (c) => {
     precise,
     dl,
     filename: slugify(resolved.theme),
+    title: resolved.theme || `Poglavlje ${chapter}`,
   });
 });
 
