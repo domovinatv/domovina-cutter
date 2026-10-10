@@ -42,6 +42,11 @@ The Worker stays on the free plan as a pure cache-gate.
 GET /clip/{videoId}/{chapter}.mp4
       {chapter} = iteration_number (1-based) from article.json
       ?dl=1       → Content-Disposition: attachment; filename="{slug(theme)}.mp4"
+                    Browser tab (Sec-Fetch-Dest: document) → HTML progress page
+                    instead, which fetches the same URL + &raw=1 and offers the
+                    Web Share sheet (mobile) / auto-download (desktop).
+                    See docs/2026-10-10-download-page-share.md
+      ?raw=1      → with ?dl=1: always the MP4, never the progress page
       ?precise=1  → frame-accurate re-encode (libx264/aac, slower); default is
                     stream-copy (-c copy), start snaps to nearest keyframe
 
@@ -152,6 +157,7 @@ curl -sI "https://cutter.domovina.ai/clip/fKlRKppc9Cs/1.mp4"   # 2nd call → 30
 | Path | What |
 |---|---|
 | `src/index.ts` | Hono Worker: routes, article resolver, key derivation, R2 head/302, cold-path call |
+| `src/page.ts` | `?dl=1` browser progress page (cut → download → Web Share) |
 | `src/article.ts` | article.json fetch/parse, `HH:MM:SS`→sec, key derivation, theme slug |
 | `service/server.js` | ffmpeg cut + R2 S3 upload HTTP service (Coolify) |
 | `service/Dockerfile` | alpine + ffmpeg + node runtime |
