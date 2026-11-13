@@ -52,12 +52,28 @@ GET /clip/{videoId}/{chapter}.mp4
 
 302 → cdn.domovina.ai/clips/...   (warm/inline)     Cache-Control: immutable, 1y
 200   video/mp4                    (?dl=1 streamed through Worker with filename)
+403   JSON {error, reason}: owner turned off share_clips / cdn_playback /
+      article_summary, or withdrew the channel (Cache-Control: no-store)
+410   JSON {error, reason}: channel deleted at the owner's request
 404   unknown videoId / chapter out of range / no article.json
 502   cutter service unreachable / ffmpeg / upstream error
 
 GET /chapters/{videoId}   → [{ chapter, start_time, end_time, theme, clip_url }]
 GET /healthz              → 200 "ok"
 ```
+
+- **Rule (postavke kanala za vlasnika)**: prije cache-gatea (dakle i prije
+  302 na već izrezan isječak, `?dl=1` stranice i `/chapters`) Worker pita
+  katalog `SETTINGS_URL` (`GET /v1/settings`, memorija izolata ~60 s) i UC
+  epizode iz `data/<id>/info.json` `channel_id` (kroz R2 binding, ne CDN).
+  Kanal s isključenim `share_clips`, `cdn_playback` ili `article_summary`
+  nakon zatvaranja po ovisnostima (`closeOff` u `src/settings.ts`, preslika
+  `fetch.domovina.tv/lib/channel_settings.js`) ili povučen dobiva 403, obrisan
+  410, s kratkim razlogom na hrvatskom. Cutter je čitač: ne odgovori li
+  katalog, koristi zadnju dobru snimku, a bez nje **ne blokira** (fail-open) i
+  logira. Već izrezan isječak na R2/CDN-u ostaje (sakriti ≠ obrisati); izravan
+  `cdn.domovina.ai/clips/…` URL ovaj Worker ne vidi. Coolify servis
+  (`service/`) postavke ne čita: zove ga samo ovaj Worker, nakon provjere.
 
 ## Flutter integration
 
@@ -158,6 +174,7 @@ curl -sI "https://cutter.domovina.ai/clip/fKlRKppc9Cs/1.mp4"   # 2nd call → 30
 |---|---|
 | `src/index.ts` | Hono Worker: routes, article resolver, key derivation, R2 head/302, cold-path call |
 | `src/page.ts` | `?dl=1` browser progress page (cut → download → Web Share) |
+| `src/settings.ts` | postavke kanala: `closeOff`, cache ~60 s, UC iz info.json, 403/410 (`npm test`) |
 | `src/article.ts` | article.json fetch/parse, `HH:MM:SS`→sec, key derivation, theme slug |
 | `service/server.js` | ffmpeg cut + R2 S3 upload HTTP service (Coolify) |
 | `service/Dockerfile` | alpine + ffmpeg + node runtime |

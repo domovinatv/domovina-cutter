@@ -26,7 +26,9 @@
   "vars": {
     // Base URL of the Coolify-hosted ffmpeg cutter microservice.
     // Update to the real subdomain once the Coolify app is deployed.
-    "CUTTER_URL": "https://cutter-svc.domovina.ai"
+    "CUTTER_URL": "https://cutter-svc.domovina.ai",
+    // Postavke kanala za vlasnika (katalog). Cache ~60 s, fail-open (README).
+    "SETTINGS_URL": "https://domovina.ai/api/katalog/v1/settings"
   },
   // A prior deploy registered CutterContainer + SingleFlight Durable Objects
   // before the (now removed) CF Container path was abandoned. v2 deletes them.

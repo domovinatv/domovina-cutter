@@ -10,6 +10,13 @@ import {
   videoUrl,
 } from "./article";
 import { isDocumentNavigation, renderDownloadPage } from "./page";
+import {
+  blockResponse,
+  checkClipAllowed,
+  DEFAULT_SETTINGS_URL,
+  EpisodeChannelCache,
+  SettingsCache,
+} from "./settings";
 
 export interface Env {
   // R2 bucket that also backs cdn.domovina.ai. Used ONLY for existence checks
@@ -20,6 +27,8 @@ export interface Env {
   CUTTER_URL: string;
   // Bearer token the Worker sends to the cutter service. `wrangler secret put`.
   CUTTER_API_KEY?: string;
+  // Katalog `GET /v1/settings` (postavke kanala za vlasnika); prazno = produkcija.
+  SETTINGS_URL?: string;
 }
 
 interface CutRequest {
@@ -33,6 +42,18 @@ interface CutRequest {
 const CLIP_CACHE = "public, max-age=31536000, immutable";
 
 const app = new Hono<{ Bindings: Env }>();
+
+// Postavke kanala: memorija izolata (~60 s), fail-open. Vidi src/settings.ts.
+let settingsCache: SettingsCache | null = null;
+const episodeChannels = new EpisodeChannelCache();
+
+/** 403/410 kad vlasnik kanala ne dopušta isječke; `null` = smije. */
+async function channelGate(env: Env, videoId: string): Promise<Response | null> {
+  const url = env.SETTINGS_URL || DEFAULT_SETTINGS_URL;
+  settingsCache ??= new SettingsCache(url, (u, init) => fetch(u, init));
+  const block = await checkClipAllowed(videoId, settingsCache, episodeChannels, env.CLIPS);
+  return block ? blockResponse(block) : null;
+}
 
 app.get("/healthz", (c) => c.text("ok"));
 
@@ -48,6 +69,8 @@ app.get("/", (c) =>
 app.get("/chapters/:videoId", async (c) => {
   const videoId = c.req.param("videoId");
   if (!isValidVideoId(videoId)) return c.text("bad videoId", 404);
+  const gate = await channelGate(c.env, videoId);
+  if (gate) return gate;
   const article = await fetchArticle(videoId);
   if (!article) return c.text("no article.json", 404);
   const origin = new URL(c.req.url).origin;
@@ -187,6 +210,10 @@ app.get("/clip/:videoId/r/:file", async (c) => {
   const endSec = parseInt(m[2], 10);
   if (endSec <= startSec) return c.text("empty range", 404);
 
+  // Prije cache-gatea: odbija i rezanje i 302 na već izrezan isječak.
+  const gate = await channelGate(c.env, videoId);
+  if (gate) return gate;
+
   const precise = c.req.query("precise") === "1";
   const dl = c.req.query("dl") === "1";
   const name = c.req.query("name") ?? "";
@@ -211,6 +238,10 @@ app.get("/clip/:videoId/:file", async (c) => {
   const m = /^(\d+)\.mp4$/.exec(file);
   if (!m) return c.text("expected {chapter}.mp4", 404);
   const chapter = parseInt(m[1], 10);
+
+  // Prije cache-gatea: odbija i rezanje i 302 na već izrezan isječak.
+  const gate = await channelGate(c.env, videoId);
+  if (gate) return gate;
 
   const precise = c.req.query("precise") === "1";
   const dl = c.req.query("dl") === "1";
