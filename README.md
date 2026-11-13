@@ -74,6 +74,10 @@ GET /healthz              → 200 "ok"
   logira. Već izrezan isječak na R2/CDN-u ostaje (sakriti ≠ obrisati); izravan
   `cdn.domovina.ai/clips/…` URL ovaj Worker ne vidi. Coolify servis
   (`service/`) postavke ne čita: zove ga samo ovaj Worker, nakon provjere.
+  Katalog se čita kroz **service binding `KATALOG`** (`domovina-katalog`), ne
+  fetchom: cutter je u zoni domovina.ai, a fetch na `domovina.ai/api/katalog/*`
+  iz Workera vrati HTML stranice (izmjereno 13. 11. 2026., gate je bio tiho
+  fail-open).
 
 ## Flutter integration
 

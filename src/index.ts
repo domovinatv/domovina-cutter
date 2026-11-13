@@ -29,6 +29,10 @@ export interface Env {
   CUTTER_API_KEY?: string;
   // Katalog `GET /v1/settings` (postavke kanala za vlasnika); prazno = produkcija.
   SETTINGS_URL?: string;
+  // Service binding na katalog Worker. Obavezan u produkciji: cutter je u zoni
+  // domovina.ai, pa običan fetch na domovina.ai/api/katalog/* ne stigne do
+  // kataloga nego vrati HTML (izmjereno 13. 11. 2026.).
+  KATALOG?: Fetcher;
 }
 
 interface CutRequest {
@@ -50,7 +54,9 @@ const episodeChannels = new EpisodeChannelCache();
 /** 403/410 kad vlasnik kanala ne dopušta isječke; `null` = smije. */
 async function channelGate(env: Env, videoId: string): Promise<Response | null> {
   const url = env.SETTINGS_URL || DEFAULT_SETTINGS_URL;
-  settingsCache ??= new SettingsCache(url, (u, init) => fetch(u, init));
+  settingsCache ??= new SettingsCache(url, (u, init) =>
+    env.KATALOG ? env.KATALOG.fetch(u, init) : fetch(u, init),
+  );
   const block = await checkClipAllowed(videoId, settingsCache, episodeChannels, env.CLIPS);
   return block ? blockResponse(block) : null;
 }

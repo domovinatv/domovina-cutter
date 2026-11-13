@@ -23,6 +23,11 @@
       "bucket_name": "cdn-domovina-ai"
     }
   ],
+  // Katalog iz iste zone: fetch na domovina.ai/api/katalog/* iz Workera vrati
+  // HTML stranice, ne katalog (13. 11. 2026.), pa postavke idu kroz binding.
+  "services": [
+    { "binding": "KATALOG", "service": "domovina-katalog" }
+  ],
   "vars": {
     // Base URL of the Coolify-hosted ffmpeg cutter microservice.
     // Update to the real subdomain once the Coolify app is deployed.
